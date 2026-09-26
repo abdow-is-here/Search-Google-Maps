@@ -14,28 +14,41 @@ from flask import Flask, render_template, request, jsonify
 app = Flask(__name__)
 
 API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
-TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress"
 
 
 def search_places(query, max_pages=3):
+    """Uses the New Places API (Text Search). Returns a normalized list of dicts."""
     results = []
-    params = {"query": query, "key": API_KEY}
+    body = {"textQuery": query, "pageSize": 20}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": API_KEY,
+        "X-Goog-FieldMask": FIELD_MASK + ",nextPageToken",
+    }
 
     for _ in range(max_pages):
-        resp = requests.get(TEXT_SEARCH_URL, params=params).json()
-        status = resp.get("status")
+        resp = requests.post(TEXT_SEARCH_URL, json=body, headers=headers).json()
 
-        if status not in ("OK", "ZERO_RESULTS"):
-            raise RuntimeError(f"{status}: {resp.get('error_message', '')}")
+        if "error" in resp:
+            raise RuntimeError(resp["error"].get("message", "Unknown error"))
 
-        results.extend(resp.get("results", []))
+        for p in resp.get("places", []):
+            results.append({
+                "name": p.get("displayName", {}).get("text", "N/A"),
+                "rating": p.get("rating"),
+                "user_ratings_total": p.get("userRatingCount", 0),
+                "formatted_address": p.get("formattedAddress"),
+                "place_id": p.get("id"),
+            })
 
-        next_token = resp.get("next_page_token")
+        next_token = resp.get("nextPageToken")
         if not next_token:
             break
 
-        time.sleep(2)  # Google requires a short delay before a page token is valid
-        params = {"pagetoken": next_token, "key": API_KEY}
+        time.sleep(2)  # short delay before a page token becomes valid
+        body = {"textQuery": query, "pageSize": 20, "pageToken": next_token}
 
     return results
 

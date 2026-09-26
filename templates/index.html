@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Best Restaurants Finder</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <h1>🍽️ Best Restaurants Finder</h1>
+    <p class="subtitle">Search any city and get the top-rated restaurants, ranked by rating and review count.</p>
+
+    <form id="search-form">
+      <input type="text" id="query" placeholder="e.g. restaurants in Riyadh" required>
+
+      <div class="options">
+        <label>
+          Min. reviews
+          <input type="number" id="min_reviews" value="20" min="0">
+        </label>
+        <label>
+          Results
+          <input type="number" id="top" value="10" min="1" max="20">
+        </label>
+      </div>
+
+      <button type="submit">Search</button>
+    </form>
+
+    <div id="status"></div>
+    <div id="results"></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('search-form');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = document.getElementById('query').value.trim();
+      const minReviews = document.getElementById('min_reviews').value;
+      const top = document.getElementById('top').value;
+
+      resultsEl.innerHTML = '';
+      statusEl.textContent = 'Searching...';
+
+      try {
+        const res = await fetch(`/api/search?query=${encodeURIComponent(query)}&min_reviews=${minReviews}&top=${top}`);
+        const data = await res.json();
+
+        if (!res.ok) {
+          statusEl.textContent = data.error || 'Something went wrong.';
+          return;
+        }
+
+        if (data.results.length === 0) {
+          statusEl.textContent = 'No results met the minimum review threshold. Try lowering it.';
+          return;
+        }
+
+        statusEl.textContent = '';
+        data.results.forEach((r, i) => {
+          const card = document.createElement('a');
+          card.className = 'card';
+          card.href = r.maps_url;
+          card.target = '_blank';
+          card.rel = 'noopener';
+          card.innerHTML = `
+            <div class="rank">${i + 1}</div>
+            <div class="info">
+              <div class="name">${r.name}</div>
+              <div class="meta">⭐ ${r.rating} · ${r.reviews.toLocaleString()} reviews</div>
+              <div class="address">${r.address || ''}</div>
+            </div>
+          `;
+          resultsEl.appendChild(card);
+        });
+      } catch (err) {
+        statusEl.textContent = 'Network error. Please try again.';
+      }
+    });
+  </script>
+</body>
+</html>

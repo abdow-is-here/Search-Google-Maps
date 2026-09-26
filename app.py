@@ -59,7 +59,7 @@ def rank_restaurants(places, min_reviews=20, top_n=10):
         if p.get("rating") is not None
         and p.get("user_ratings_total", 0) >= min_reviews
     ]
-    filtered.sort(key=lambda p: (p["rating"], p["user_ratings_total"]), reverse=True)
+    filtered.sort(key=lambda p: (p["user_ratings_total"], p["rating"]), reverse=True)
     return filtered[:top_n]
 
 

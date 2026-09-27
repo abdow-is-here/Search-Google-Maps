@@ -3,43 +3,97 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Restaurants Finder</title>
+<title>Google Maps Best Rating Finder</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <div class="container">
-    <h1>🍽️ Best Restaurants Finder</h1>
-    <p class="subtitle">Search any city and get the top-rated restaurants, ranked by rating and review count.</p>
-
-    <form id="search-form">
-      <input type="text" id="query" placeholder="e.g. restaurants in Riyadh" required>
-
-      <div class="options">
-        <label>
-          Min. reviews
-          <input type="number" id="min_reviews" value="20" min="0">
-        </label>
-        <label>
-          Results
-          <input type="number" id="top" value="10" min="1" max="20">
-        </label>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">📍</span>
+        <span class="brand-name">Best Rating Finder</span>
       </div>
+      <h2 class="sidebar-title">Recent searches</h2>
+      <ul id="recent-list" class="recent-list">
+        <li class="empty-hint">Your last 5 searches will show up here.</li>
+      </ul>
+    </aside>
 
-      <button type="submit">Search</button>
-    </form>
+    <main class="container">
+      <h1>Google Maps Best Rating Finder</h1>
+      <p class="subtitle">Search any city and get the top-rated places, ranked by rating and review count.</p>
 
-    <div id="status"></div>
-    <div id="results"></div>
+      <form id="search-form">
+        <input type="text" id="query" placeholder="e.g. restaurants in Riyadh" required>
+
+        <div class="options">
+          <label>
+            Min. reviews
+            <input type="number" id="min_reviews" value="20" min="0">
+          </label>
+          <label>
+            Results
+            <input type="number" id="top" value="10" min="1" max="20">
+          </label>
+        </div>
+
+        <button type="submit">Search</button>
+      </form>
+
+      <div id="status"></div>
+      <div id="results"></div>
+    </main>
   </div>
 
   <script>
     const form = document.getElementById('search-form');
     const statusEl = document.getElementById('status');
     const resultsEl = document.getElementById('results');
+    const recentListEl = document.getElementById('recent-list');
+    const queryInput = document.getElementById('query');
+
+    const RECENT_KEY = 'gmbrf_recent_searches';
+
+    function getRecent() {
+      try {
+        return JSON.parse(localStorage.getItem(RECENT_KEY)) || [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveRecent(query) {
+      let recent = getRecent().filter(q => q.toLowerCase() !== query.toLowerCase());
+      recent.unshift(query);
+      recent = recent.slice(0, 5);
+      localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+      renderRecent();
+    }
+
+    function renderRecent() {
+      const recent = getRecent();
+      recentListEl.innerHTML = '';
+      if (recent.length === 0) {
+        recentListEl.innerHTML = '<li class="empty-hint">Your last 5 searches will show up here.</li>';
+        return;
+      }
+      recent.forEach(q => {
+        const li = document.createElement('li');
+        li.className = 'recent-item';
+        li.textContent = q;
+        li.addEventListener('click', () => {
+          queryInput.value = q;
+          form.requestSubmit();
+        });
+        recentListEl.appendChild(li);
+      });
+    }
+
+    renderRecent();
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const query = document.getElementById('query').value.trim();
+      const query = queryInput.value.trim();
       const minReviews = document.getElementById('min_reviews').value;
       const top = document.getElementById('top').value;
 
@@ -54,6 +108,8 @@
           statusEl.textContent = data.error || 'Something went wrong.';
           return;
         }
+
+        saveRecent(query);
 
         if (data.results.length === 0) {
           statusEl.textContent = 'No results met the minimum review threshold. Try lowering it.';

@@ -118,7 +118,7 @@ def search_places(query, max_pages=3):
             break
 
         time.sleep(2)  # short delay before a page token becomes valid
-        body = {"textQuery": query, "pageSize": 20, "pageToken": next_token}
+        body["pageToken"] = next_token
 
     return results
 

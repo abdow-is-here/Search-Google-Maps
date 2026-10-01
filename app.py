@@ -9,6 +9,9 @@ and returns the top-rated restaurants for any city or area you type in.
 import os
 import re
 import time
+import json
+import threading
+from datetime import datetime, timezone
 import requests
 from flask import Flask, render_template, request, jsonify
 
@@ -19,6 +22,75 @@ TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress"
 
 CITY_RADIUS_METERS = 40000.0  # fallback only, used if a place has no viewport info
+
+LOG_FILE = os.path.join(os.path.dirname(__file__), "visit_log.jsonl")
+LOG_LOCK = threading.Lock()
+ADMIN_KEY = os.environ.get("LOGS_ADMIN_KEY")  # set this on Render to view /logs
+
+
+def get_client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def describe_device(ua):
+    ua = ua or ""
+    if "iPhone" in ua:
+        os_name = "iPhone"
+    elif "iPad" in ua:
+        os_name = "iPad"
+    elif "Android" in ua:
+        os_name = "Android"
+    elif "Macintosh" in ua or "Mac OS X" in ua:
+        os_name = "Mac"
+    elif "Windows" in ua:
+        os_name = "Windows"
+    elif "Linux" in ua:
+        os_name = "Linux"
+    else:
+        os_name = "Unknown OS"
+
+    if "Edg/" in ua:
+        browser = "Edge"
+    elif "Chrome/" in ua and "Chromium" not in ua:
+        browser = "Chrome"
+    elif "CriOS" in ua:
+        browser = "Chrome (iOS)"
+    elif "Firefox/" in ua:
+        browser = "Firefox"
+    elif "Safari/" in ua and "Chrome" not in ua:
+        browser = "Safari"
+    else:
+        browser = "Unknown browser"
+
+    return f"{os_name} · {browser}"
+
+
+def log_visit():
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ip": get_client_ip(),
+        "device": describe_device(request.headers.get("User-Agent")),
+        "user_agent": request.headers.get("User-Agent", ""),
+        "path": request.path,
+    }
+    line = json.dumps(entry)
+    with LOG_LOCK:
+        with open(LOG_FILE, "a") as f:
+            f.write(line + "\n")
+
+
+@app.before_request
+def _track_visit():
+    # Skip static assets and the logs page itself to keep the log meaningful
+    if request.path.startswith("/static/") or request.path == "/logs":
+        return
+    try:
+        log_visit()
+    except OSError:
+        pass  # logging is best-effort; never break the app over a disk issue
 
 
 def extract_location_phrase(query):
@@ -123,10 +195,11 @@ def search_places(query, max_pages=3):
     return results
 
 
-def rank_restaurants(places, min_reviews=20, top_n=10):
+def rank_restaurants(places, min_reviews=0, top_n=10, min_rating=0.0):
     filtered = [
         p for p in places
         if p.get("rating") is not None
+        and p["rating"] >= min_rating
         and p.get("user_ratings_total", 0) >= min_reviews
     ]
     filtered.sort(key=lambda p: (p["user_ratings_total"], p["rating"]), reverse=True)
@@ -144,15 +217,25 @@ def api_search():
         return jsonify({"error": "Server is missing GOOGLE_MAPS_API_KEY."}), 500
 
     query = request.args.get("query", "").strip()
-    min_reviews = int(request.args.get("min_reviews", 20))
-    top_n = int(request.args.get("top", 10))
+    mode = request.args.get("mode", "auto")
+
+    if mode == "auto":
+        # Best rankings: no filters, just the top 10 for the search term
+        min_reviews, min_rating, top_n = 0, 0.0, 10
+    else:
+        try:
+            min_reviews = int(request.args.get("min_reviews", 0) or 0)
+            min_rating = float(request.args.get("min_rating", 0) or 0)
+            top_n = int(request.args.get("top", 10) or 10)
+        except ValueError:
+            return jsonify({"error": "Invalid filter values."}), 400
 
     if not query:
         return jsonify({"error": "Please provide a search query."}), 400
 
     try:
         places = search_places(query)
-        top = rank_restaurants(places, min_reviews, top_n)
+        top = rank_restaurants(places, min_reviews, top_n, min_rating)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 502
 
@@ -167,6 +250,28 @@ def api_search():
         for p in top
     ]
     return jsonify({"results": cleaned})
+
+
+@app.route("/logs")
+def view_logs():
+    provided_key = request.args.get("key", "")
+    if not ADMIN_KEY or provided_key != ADMIN_KEY:
+        return "Not found", 404
+
+    entries = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    entries.reverse()  # most recent first
+    return render_template("logs.html", entries=entries)
 
 
 if __name__ == "__main__":

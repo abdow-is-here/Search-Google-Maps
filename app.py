@@ -106,7 +106,9 @@ def resolve_location_phrase(query, city, country):
     if explicit:
         return explicit
     if city:
-        return f"{city}, {country}" if country else city
+        if country and country.lower() not in city.lower():
+            return f"{city}, {country}"
+        return city
     return None
 
 
@@ -168,8 +170,11 @@ def search_places(query, city=None, country=None, max_pages=3):
     location_phrase = resolve_location_phrase(query, city, country)
     if location_phrase:
         geo = geocode_location(location_phrase)
-        if geo:
-            location_restriction = build_location_restriction(geo)
+        if not geo:
+            # A location WAS specified but couldn't be resolved — better to say so
+            # clearly than to silently run an unrestricted, potentially global search.
+            raise RuntimeError(f"Could not find the location \"{location_phrase}\". Try a different spelling.")
+        location_restriction = build_location_restriction(geo)
 
     body = {"textQuery": query, "pageSize": 20}
     if location_restriction:

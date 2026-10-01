@@ -124,38 +124,37 @@ h1 {
   margin-bottom: 16px;
 }
 
-.category-bar {
+.category-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 2px 2px 10px;
-  margin-bottom: 4px;
-  scrollbar-width: thin;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.category-bar::-webkit-scrollbar { height: 5px; }
-.category-bar::-webkit-scrollbar-thumb { background: #d0d5dd; border-radius: 3px; }
-
-.cat-chip {
-  flex: 0 0 auto;
-  display: inline-flex;
+.cat-item {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
+  gap: 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #e2e6f0;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease;
 }
 
-.cat-chip:hover {
-  background: #eef4ff;
-  border-color: var(--primary);
+.cat-item:hover {
+  background: rgba(255,255,255,0.1);
+}
+
+.cat-item .cat-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
 }
 
 #search-form {

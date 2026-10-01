@@ -17,27 +17,28 @@
       <ul id="recent-list" class="recent-list">
         <li class="empty-hint">Your last 5 searches will show up here.</li>
       </ul>
+
+      <h2 class="sidebar-title">Quick search</h2>
+      <ul class="category-list" id="category-grid">
+        <li class="cat-item" data-term="restaurants"><span class="cat-icon">🍽️</span>Restaurants</li>
+        <li class="cat-item" data-term="hotels"><span class="cat-icon">🏨</span>Hotels</li>
+        <li class="cat-item" data-term="car rental"><span class="cat-icon">🚗</span>Car Rentals</li>
+        <li class="cat-item" data-term="gyms"><span class="cat-icon">🏋️</span>Gyms</li>
+        <li class="cat-item" data-term="libraries"><span class="cat-icon">📚</span>Libraries</li>
+        <li class="cat-item" data-term="parks"><span class="cat-icon">🌳</span>Parks &amp; Gardens</li>
+        <li class="cat-item" data-term="beauty salons"><span class="cat-icon">💇</span>Beauty Salons</li>
+        <li class="cat-item" data-term="dry cleaning"><span class="cat-icon">👔</span>Dry Cleaning</li>
+        <li class="cat-item" data-term="hospitals"><span class="cat-icon">🏥</span>Hospitals</li>
+        <li class="cat-item" data-term="schools"><span class="cat-icon">🏫</span>Schools</li>
+        <li class="cat-item" data-term="malls"><span class="cat-icon">🛍️</span>Malls</li>
+        <li class="cat-item" data-term="mosques"><span class="cat-icon">🕌</span>Mosques</li>
+        <li class="cat-item" data-term="grocery stores"><span class="cat-icon">🛒</span>Groceries</li>
+      </ul>
     </aside>
 
     <main class="container">
       <h1>Google Maps Best Rating Finder</h1>
       <p class="subtitle">Search any city and get the top-rated places, ranked by rating and review count.</p>
-
-      <div class="category-bar" id="category-grid">
-        <button type="button" class="cat-chip" data-term="restaurants">🍽️ Restaurants</button>
-        <button type="button" class="cat-chip" data-term="hotels">🏨 Hotels</button>
-        <button type="button" class="cat-chip" data-term="car rental">🚗 Car Rentals</button>
-        <button type="button" class="cat-chip" data-term="gyms">🏋️ Gyms</button>
-        <button type="button" class="cat-chip" data-term="libraries">📚 Libraries</button>
-        <button type="button" class="cat-chip" data-term="parks">🌳 Parks &amp; Gardens</button>
-        <button type="button" class="cat-chip" data-term="beauty salons">💇 Beauty Salons</button>
-        <button type="button" class="cat-chip" data-term="dry cleaning">👔 Dry Cleaning</button>
-        <button type="button" class="cat-chip" data-term="hospitals">🏥 Hospitals</button>
-        <button type="button" class="cat-chip" data-term="schools">🏫 Schools</button>
-        <button type="button" class="cat-chip" data-term="malls">🛍️ Malls</button>
-        <button type="button" class="cat-chip" data-term="mosques">🕌 Mosques</button>
-        <button type="button" class="cat-chip" data-term="grocery stores">🛒 Groceries</button>
-      </div>
 
       <p id="location-badge" class="location-badge"></p>
 
@@ -245,7 +246,7 @@
     renderRecent();
 
     // --- Category shortcut buttons ---
-    document.querySelectorAll('.cat-chip').forEach(btn => {
+    document.querySelectorAll('.cat-item').forEach(btn => {
       btn.addEventListener('click', () => {
         queryInput.value = btn.dataset.term;
         form.requestSubmit();

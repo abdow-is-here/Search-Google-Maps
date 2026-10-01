@@ -84,8 +84,8 @@ def log_visit():
 
 @app.before_request
 def _track_visit():
-    # Skip static assets and the logs page itself to keep the log meaningful
-    if request.path.startswith("/static/") or request.path == "/logs":
+    # Skip static assets, API calls, and the logs page itself to keep the log meaningful
+    if request.path.startswith("/static/") or request.path.startswith("/api/") or request.path == "/logs":
         return
     try:
         log_visit()
@@ -97,6 +97,17 @@ def extract_location_phrase(query):
     """Pulls out the location part of a query like 'malls in Cairo' -> 'Cairo'."""
     match = re.search(r"\b(?:in|near|at)\s+(.+)$", query, re.IGNORECASE)
     return match.group(1).strip() if match else None
+
+
+def resolve_location_phrase(query, city, country):
+    """An explicit 'in X' typed by the user always wins; otherwise falls back to
+    the city/country the client sent (auto-detected, or chosen in Custom Filters)."""
+    explicit = extract_location_phrase(query)
+    if explicit:
+        return explicit
+    if city:
+        return f"{city}, {country}" if country else city
+    return None
 
 
 def geocode_location(location_text):
@@ -149,12 +160,12 @@ def build_location_restriction(geo):
     }
 
 
-def search_places(query, max_pages=3):
-    """Uses the New Places API (Text Search), hard-restricted to the city in the query."""
+def search_places(query, city=None, country=None, max_pages=3):
+    """Uses the New Places API (Text Search), hard-restricted to the resolved city."""
     results = []
 
     location_restriction = None
-    location_phrase = extract_location_phrase(query)
+    location_phrase = resolve_location_phrase(query, city, country)
     if location_phrase:
         geo = geocode_location(location_phrase)
         if geo:
@@ -218,14 +229,16 @@ def api_search():
 
     query = request.args.get("query", "").strip()
     mode = request.args.get("mode", "auto")
+    city = request.args.get("city", "").strip()
+    country = request.args.get("country", "").strip()
 
     if mode == "auto":
-        # Best rankings: no filters, just the top 10 for the search term
+        # Best rankings: no rating/review filters, just the top 10 for the search term
         min_reviews, min_rating, top_n = 0, 0.0, 10
     else:
         try:
             min_reviews = int(request.args.get("min_reviews", 0) or 0)
-            min_rating = float(request.args.get("min_rating", 0) or 0)
+            min_rating = float(request.args.get("min_rating", 3) or 3)
             top_n = int(request.args.get("top", 10) or 10)
         except ValueError:
             return jsonify({"error": "Invalid filter values."}), 400
@@ -234,7 +247,7 @@ def api_search():
         return jsonify({"error": "Please provide a search query."}), 400
 
     try:
-        places = search_places(query)
+        places = search_places(query, city=city, country=country)
         top = rank_restaurants(places, min_reviews, top_n, min_rating)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 502
@@ -250,6 +263,84 @@ def api_search():
         for p in top
     ]
     return jsonify({"results": cleaned})
+
+
+@app.route("/api/reverse-geocode")
+def reverse_geocode():
+    """Turns GPS coordinates into a city + country. Uses Places API (New) Nearby
+    Search — the same already-enabled, already-billed API as everything else in
+    this app — rather than the separate Geocoding API, which has its own billing
+    rules in some regions (e.g. requires an authorized reseller in Saudi Arabia)."""
+    lat = request.args.get("lat")
+    lng = request.args.get("lng")
+    if not lat or not lng:
+        return jsonify({"error": "Missing lat/lng"}), 400
+
+    body = {
+        "maxResultCount": 1,
+        "locationRestriction": {
+            "circle": {
+                "center": {"latitude": float(lat), "longitude": float(lng)},
+                "radius": 2000.0,
+            }
+        },
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": API_KEY,
+        "X-Goog-FieldMask": "places.addressComponents",
+    }
+    resp = requests.post(
+        "https://places.googleapis.com/v1/places:searchNearby", json=body, headers=headers
+    ).json()
+
+    places = resp.get("places", [])
+    if not places:
+        return jsonify({"error": "No nearby place found"}), 502
+
+    components = places[0].get("addressComponents", [])
+
+    def find(type_name, field="longText"):
+        for c in components:
+            if type_name in c.get("types", []):
+                return c.get(field)
+        return None
+
+    city = find("locality") or find("administrative_area_level_2")
+    country = find("country")
+    country_code = find("country", field="shortText")
+
+    return jsonify({"city": city, "country": country, "country_code": country_code})
+
+
+@app.route("/api/cities")
+def cities_autocomplete():
+    """Live city suggestions as the user types, optionally restricted to a country."""
+    input_text = request.args.get("input", "").strip()
+    country_code = request.args.get("country_code", "").strip()
+
+    if not input_text:
+        return jsonify({"cities": []})
+
+    body = {"input": input_text, "includedPrimaryTypes": ["locality"]}
+    if country_code:
+        body["includedRegionCodes"] = [country_code]
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": API_KEY,
+        "X-Goog-FieldMask": "suggestions.placePrediction.text",
+    }
+    resp = requests.post(
+        "https://places.googleapis.com/v1/places:autocomplete", json=body, headers=headers
+    ).json()
+
+    cities = [
+        s["placePrediction"]["text"]["text"]
+        for s in resp.get("suggestions", [])
+        if "placePrediction" in s
+    ]
+    return jsonify({"cities": cities})
 
 
 @app.route("/logs")

@@ -140,6 +140,44 @@ h1 {
   box-shadow: 0 0 0 3px rgba(26,115,232,0.15);
 }
 
+.mode-toggle {
+  display: flex;
+  background: #eef1f5;
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 8px;
+}
+
+.mode-option { flex: 1; cursor: pointer; }
+
+.mode-option input { display: none; }
+
+.mode-option span {
+  display: block;
+  text-align: center;
+  padding: 9px 8px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mode-option input:checked + span {
+  background: #fff;
+  color: var(--primary-dark);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.mode-hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 0 0 16px;
+  line-height: 1.4;
+}
+
+.options[hidden] { display: none; }
+
 .options {
   display: flex;
   gap: 16px;

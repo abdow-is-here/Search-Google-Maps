@@ -124,36 +124,39 @@ h1 {
   margin-bottom: 16px;
 }
 
-.category-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-  gap: 10px;
-  margin-bottom: 24px;
+.category-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 10px;
+  margin-bottom: 4px;
+  scrollbar-width: thin;
 }
 
-.cat-btn {
-  display: flex;
-  flex-direction: column;
+.category-bar::-webkit-scrollbar { height: 5px; }
+.category-bar::-webkit-scrollbar-thumb { background: #d0d5dd; border-radius: 3px; }
+
+.cat-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   background: var(--card-bg);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 6px;
+  border-radius: 999px;
+  padding: 6px 12px;
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--text);
+  white-space: nowrap;
   cursor: pointer;
-  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.cat-btn:hover {
-  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+.cat-chip:hover {
+  background: #eef4ff;
   border-color: var(--primary);
-  transform: translateY(-1px);
 }
-
-.cat-icon { font-size: 1.5rem; }
 
 #search-form {
   background: var(--card-bg);

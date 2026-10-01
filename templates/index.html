@@ -22,6 +22,23 @@
     <main class="container">
       <h1>Google Maps Best Rating Finder</h1>
       <p class="subtitle">Search any city and get the top-rated places, ranked by rating and review count.</p>
+      <p id="location-badge" class="location-badge"></p>
+
+      <div class="category-grid" id="category-grid">
+        <button type="button" class="cat-btn" data-term="restaurants"><span class="cat-icon">🍽️</span>Restaurants</button>
+        <button type="button" class="cat-btn" data-term="hotels"><span class="cat-icon">🏨</span>Hotels</button>
+        <button type="button" class="cat-btn" data-term="car rental"><span class="cat-icon">🚗</span>Car Rentals</button>
+        <button type="button" class="cat-btn" data-term="gyms"><span class="cat-icon">🏋️</span>Gyms</button>
+        <button type="button" class="cat-btn" data-term="libraries"><span class="cat-icon">📚</span>Libraries</button>
+        <button type="button" class="cat-btn" data-term="parks"><span class="cat-icon">🌳</span>Parks &amp; Gardens</button>
+        <button type="button" class="cat-btn" data-term="beauty salons"><span class="cat-icon">💇</span>Beauty Salons</button>
+        <button type="button" class="cat-btn" data-term="dry cleaning"><span class="cat-icon">👔</span>Dry Cleaning</button>
+        <button type="button" class="cat-btn" data-term="hospitals"><span class="cat-icon">🏥</span>Hospitals</button>
+        <button type="button" class="cat-btn" data-term="schools"><span class="cat-icon">🏫</span>Schools</button>
+        <button type="button" class="cat-btn" data-term="malls"><span class="cat-icon">🛍️</span>Malls</button>
+        <button type="button" class="cat-btn" data-term="mosques"><span class="cat-icon">🕌</span>Mosques</button>
+        <button type="button" class="cat-btn" data-term="grocery stores"><span class="cat-icon">🛒</span>Groceries</button>
+      </div>
 
       <form id="search-form">
         <input type="text" id="query" placeholder="e.g. restaurants in Riyadh" required>
@@ -41,7 +58,7 @@
         <div class="options" id="custom-options" hidden>
           <label>
             Min. rating
-            <input type="number" id="min_rating" value="0" min="0" max="5" step="0.1">
+            <input type="number" id="min_rating" value="3" min="0" max="5" step="0.1">
           </label>
           <label>
             Min. reviews
@@ -53,6 +70,20 @@
           </label>
         </div>
 
+        <div class="options" id="location-options" hidden>
+          <label>
+            Country
+            <select id="country-select">
+              <option value="">Any</option>
+            </select>
+          </label>
+          <label>
+            City
+            <input type="text" id="city-input" list="city-datalist" placeholder="e.g. Riyadh" autocomplete="off">
+            <datalist id="city-datalist"></datalist>
+          </label>
+        </div>
+
         <button type="submit">Search</button>
       </form>
 
@@ -61,18 +92,44 @@
     </main>
   </div>
 
+  <script src="{{ url_for('static', filename='countries.js') }}"></script>
   <script>
     const form = document.getElementById('search-form');
     const statusEl = document.getElementById('status');
     const resultsEl = document.getElementById('results');
     const recentListEl = document.getElementById('recent-list');
     const queryInput = document.getElementById('query');
+    const locationBadgeEl = document.getElementById('location-badge');
+    const countrySelectEl = document.getElementById('country-select');
+    const cityInputEl = document.getElementById('city-input');
+    const cityDatalistEl = document.getElementById('city-datalist');
 
     const RECENT_KEY = 'gmbrf_recent_searches';
 
     const customOptionsEl = document.getElementById('custom-options');
+    const locationOptionsEl = document.getElementById('location-options');
     const modeHintEl = document.getElementById('mode-hint');
 
+    // Detected (or manually chosen) current location
+    let currentCity = '';
+    let currentCountryName = '';
+    let currentCountryCode = '';
+
+    // --- Country dropdown setup ---
+    COUNTRIES.forEach(([code, name]) => {
+      const opt = document.createElement('option');
+      opt.value = code;
+      opt.textContent = name;
+      opt.dataset.name = name;
+      countrySelectEl.appendChild(opt);
+    });
+
+    function selectedCountryName() {
+      const opt = countrySelectEl.selectedOptions[0];
+      return opt ? (opt.dataset.name || '') : '';
+    }
+
+    // --- Mode toggle ---
     function getMode() {
       return document.querySelector('input[name="mode"]:checked').value;
     }
@@ -80,14 +137,66 @@
     function applyMode() {
       const isCustom = getMode() === 'custom';
       customOptionsEl.hidden = !isCustom;
+      locationOptionsEl.hidden = !isCustom;
       modeHintEl.textContent = isCustom
-        ? 'Only shows places that meet the minimum rating and review count you set.'
-        : 'Shows the top 10 results for your search, sorted by number of reviews (rating breaks ties).';
+        ? 'Only shows places that meet the minimum rating and review count you set, in the country/city you pick.'
+        : 'Shows the top 10 results for your search in your current city, sorted by number of reviews (rating breaks ties).';
     }
 
     document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', applyMode));
     applyMode();
 
+    // --- Location detection ---
+    function updateLocationBadge() {
+      if (currentCity) {
+        locationBadgeEl.textContent = `📍 Searching near: ${currentCity}${currentCountryName ? ', ' + currentCountryName : ''}`;
+      } else {
+        locationBadgeEl.textContent = '';
+      }
+    }
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude, longitude } = pos.coords;
+          try {
+            const res = await fetch(`/api/reverse-geocode?lat=${latitude}&lng=${longitude}`);
+            const data = await res.json();
+            if (res.ok) {
+              currentCity = data.city || '';
+              currentCountryName = data.country || '';
+              currentCountryCode = data.country_code || '';
+              if (currentCountryCode) countrySelectEl.value = currentCountryCode;
+              if (currentCity) cityInputEl.value = currentCity;
+              updateLocationBadge();
+            }
+          } catch { /* silently proceed without auto-location */ }
+        },
+        () => { /* permission denied or unavailable; app still works, just no auto-city */ }
+      );
+    }
+
+    // --- City autocomplete (as-you-type, scoped to selected country) ---
+    let cityDebounce;
+    cityInputEl.addEventListener('input', () => {
+      clearTimeout(cityDebounce);
+      const value = cityInputEl.value.trim();
+      if (value.length < 2) return;
+      cityDebounce = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/cities?input=${encodeURIComponent(value)}&country_code=${countrySelectEl.value}`);
+          const data = await res.json();
+          cityDatalistEl.innerHTML = '';
+          (data.cities || []).forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            cityDatalistEl.appendChild(opt);
+          });
+        } catch { /* ignore, autocomplete is a convenience feature */ }
+      }, 300);
+    });
+
+    // --- Recent searches (per-browser) ---
     function getRecent() {
       try {
         return JSON.parse(localStorage.getItem(RECENT_KEY)) || [];
@@ -125,17 +234,35 @@
 
     renderRecent();
 
+    // --- Category shortcut buttons ---
+    document.querySelectorAll('.cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        queryInput.value = btn.dataset.term;
+        form.requestSubmit();
+      });
+    });
+
+    // --- Search submit ---
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const query = queryInput.value.trim();
       const mode = getMode();
 
       let url = `/api/search?query=${encodeURIComponent(query)}&mode=${mode}`;
+
       if (mode === 'custom') {
         const minRating = document.getElementById('min_rating').value;
         const minReviews = document.getElementById('min_reviews').value;
         const top = document.getElementById('top').value;
         url += `&min_rating=${minRating}&min_reviews=${minReviews}&top=${top}`;
+
+        const city = cityInputEl.value.trim();
+        const country = selectedCountryName();
+        if (city) url += `&city=${encodeURIComponent(city)}`;
+        if (country) url += `&country=${encodeURIComponent(country)}`;
+      } else if (currentCity) {
+        url += `&city=${encodeURIComponent(currentCity)}`;
+        if (currentCountryName) url += `&country=${encodeURIComponent(currentCountryName)}`;
       }
 
       resultsEl.innerHTML = '';

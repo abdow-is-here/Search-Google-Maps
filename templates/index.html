@@ -22,23 +22,24 @@
     <main class="container">
       <h1>Google Maps Best Rating Finder</h1>
       <p class="subtitle">Search any city and get the top-rated places, ranked by rating and review count.</p>
-      <p id="location-badge" class="location-badge"></p>
 
-      <div class="category-grid" id="category-grid">
-        <button type="button" class="cat-btn" data-term="restaurants"><span class="cat-icon">🍽️</span>Restaurants</button>
-        <button type="button" class="cat-btn" data-term="hotels"><span class="cat-icon">🏨</span>Hotels</button>
-        <button type="button" class="cat-btn" data-term="car rental"><span class="cat-icon">🚗</span>Car Rentals</button>
-        <button type="button" class="cat-btn" data-term="gyms"><span class="cat-icon">🏋️</span>Gyms</button>
-        <button type="button" class="cat-btn" data-term="libraries"><span class="cat-icon">📚</span>Libraries</button>
-        <button type="button" class="cat-btn" data-term="parks"><span class="cat-icon">🌳</span>Parks &amp; Gardens</button>
-        <button type="button" class="cat-btn" data-term="beauty salons"><span class="cat-icon">💇</span>Beauty Salons</button>
-        <button type="button" class="cat-btn" data-term="dry cleaning"><span class="cat-icon">👔</span>Dry Cleaning</button>
-        <button type="button" class="cat-btn" data-term="hospitals"><span class="cat-icon">🏥</span>Hospitals</button>
-        <button type="button" class="cat-btn" data-term="schools"><span class="cat-icon">🏫</span>Schools</button>
-        <button type="button" class="cat-btn" data-term="malls"><span class="cat-icon">🛍️</span>Malls</button>
-        <button type="button" class="cat-btn" data-term="mosques"><span class="cat-icon">🕌</span>Mosques</button>
-        <button type="button" class="cat-btn" data-term="grocery stores"><span class="cat-icon">🛒</span>Groceries</button>
+      <div class="category-bar" id="category-grid">
+        <button type="button" class="cat-chip" data-term="restaurants">🍽️ Restaurants</button>
+        <button type="button" class="cat-chip" data-term="hotels">🏨 Hotels</button>
+        <button type="button" class="cat-chip" data-term="car rental">🚗 Car Rentals</button>
+        <button type="button" class="cat-chip" data-term="gyms">🏋️ Gyms</button>
+        <button type="button" class="cat-chip" data-term="libraries">📚 Libraries</button>
+        <button type="button" class="cat-chip" data-term="parks">🌳 Parks &amp; Gardens</button>
+        <button type="button" class="cat-chip" data-term="beauty salons">💇 Beauty Salons</button>
+        <button type="button" class="cat-chip" data-term="dry cleaning">👔 Dry Cleaning</button>
+        <button type="button" class="cat-chip" data-term="hospitals">🏥 Hospitals</button>
+        <button type="button" class="cat-chip" data-term="schools">🏫 Schools</button>
+        <button type="button" class="cat-chip" data-term="malls">🛍️ Malls</button>
+        <button type="button" class="cat-chip" data-term="mosques">🕌 Mosques</button>
+        <button type="button" class="cat-chip" data-term="grocery stores">🛒 Groceries</button>
       </div>
+
+      <p id="location-badge" class="location-badge"></p>
 
       <form id="search-form">
         <input type="text" id="query" placeholder="e.g. restaurants in Riyadh" required>
@@ -58,7 +59,7 @@
         <div class="options" id="custom-options" hidden>
           <label>
             Min. rating
-            <input type="number" id="min_rating" value="3" min="0" max="5" step="0.1">
+            <input type="number" id="min_rating" value="3" min="0" max="5" step="0.1" autocomplete="off">
           </label>
           <label>
             Min. reviews
@@ -155,6 +156,11 @@
       }
     }
 
+    // A promise the search handler waits on, so a category click can never fire
+    // before the browser has actually resolved (or given up on) the location.
+    let resolveLocationReady;
+    const locationReady = new Promise(resolve => { resolveLocationReady = resolve; });
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
@@ -171,9 +177,13 @@
               updateLocationBadge();
             }
           } catch { /* silently proceed without auto-location */ }
+          resolveLocationReady();
         },
-        () => { /* permission denied or unavailable; app still works, just no auto-city */ }
+        () => { resolveLocationReady(); }  // permission denied or unavailable; app still works, just no auto-city
       );
+      setTimeout(resolveLocationReady, 4000);  // safety net if geolocation hangs
+    } else {
+      resolveLocationReady();
     }
 
     // --- City autocomplete (as-you-type, scoped to selected country) ---
@@ -235,7 +245,7 @@
     renderRecent();
 
     // --- Category shortcut buttons ---
-    document.querySelectorAll('.cat-btn').forEach(btn => {
+    document.querySelectorAll('.cat-chip').forEach(btn => {
       btn.addEventListener('click', () => {
         queryInput.value = btn.dataset.term;
         form.requestSubmit();
@@ -247,6 +257,11 @@
       e.preventDefault();
       const query = queryInput.value.trim();
       const mode = getMode();
+
+      if (mode === 'auto' && !currentCity) {
+        statusEl.textContent = 'Detecting your location...';
+        await locationReady;
+      }
 
       let url = `/api/search?query=${encodeURIComponent(query)}&mode=${mode}`;
 

@@ -26,7 +26,23 @@
       <form id="search-form">
         <input type="text" id="query" placeholder="e.g. restaurants in Riyadh" required>
 
-        <div class="options">
+        <div class="mode-toggle" role="radiogroup" aria-label="Search mode">
+          <label class="mode-option">
+            <input type="radio" name="mode" value="auto" checked>
+            <span>Best rankings</span>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="mode" value="custom">
+            <span>Custom filters</span>
+          </label>
+        </div>
+        <p id="mode-hint" class="mode-hint">Shows the top 10 results for your search, sorted by number of reviews (rating breaks ties).</p>
+
+        <div class="options" id="custom-options" hidden>
+          <label>
+            Min. rating
+            <input type="number" id="min_rating" value="0" min="0" max="5" step="0.1">
+          </label>
           <label>
             Min. reviews
             <input type="number" id="min_reviews" value="20" min="0">
@@ -53,6 +69,24 @@
     const queryInput = document.getElementById('query');
 
     const RECENT_KEY = 'gmbrf_recent_searches';
+
+    const customOptionsEl = document.getElementById('custom-options');
+    const modeHintEl = document.getElementById('mode-hint');
+
+    function getMode() {
+      return document.querySelector('input[name="mode"]:checked').value;
+    }
+
+    function applyMode() {
+      const isCustom = getMode() === 'custom';
+      customOptionsEl.hidden = !isCustom;
+      modeHintEl.textContent = isCustom
+        ? 'Only shows places that meet the minimum rating and review count you set.'
+        : 'Shows the top 10 results for your search, sorted by number of reviews (rating breaks ties).';
+    }
+
+    document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', applyMode));
+    applyMode();
 
     function getRecent() {
       try {
@@ -94,14 +128,21 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const query = queryInput.value.trim();
-      const minReviews = document.getElementById('min_reviews').value;
-      const top = document.getElementById('top').value;
+      const mode = getMode();
+
+      let url = `/api/search?query=${encodeURIComponent(query)}&mode=${mode}`;
+      if (mode === 'custom') {
+        const minRating = document.getElementById('min_rating').value;
+        const minReviews = document.getElementById('min_reviews').value;
+        const top = document.getElementById('top').value;
+        url += `&min_rating=${minRating}&min_reviews=${minReviews}&top=${top}`;
+      }
 
       resultsEl.innerHTML = '';
       statusEl.textContent = 'Searching...';
 
       try {
-        const res = await fetch(`/api/search?query=${encodeURIComponent(query)}&min_reviews=${minReviews}&top=${top}`);
+        const res = await fetch(url);
         const data = await res.json();
 
         if (!res.ok) {
@@ -112,7 +153,9 @@
         saveRecent(query);
 
         if (data.results.length === 0) {
-          statusEl.textContent = 'No results met the minimum review threshold. Try lowering it.';
+          statusEl.textContent = mode === 'custom'
+            ? 'No places met your rating/review filters. Try loosening them.'
+            : 'No rated places found for this search. Try a different search term.';
           return;
         }
 

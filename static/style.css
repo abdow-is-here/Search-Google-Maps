@@ -145,11 +145,18 @@ h1 {
   font-weight: 500;
   color: #e2e6f0;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
 .cat-item:hover {
-  background: rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.16);
+  border-color: rgba(255,255,255,0.25);
+  transform: translateX(2px);
+}
+
+.cat-item:active {
+  background: rgba(255,255,255,0.22);
+  transform: translateX(2px) scale(0.98);
 }
 
 .cat-item .cat-icon {

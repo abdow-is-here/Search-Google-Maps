@@ -256,7 +256,7 @@ def search_places(query, city=None, country=None, max_pages=3):
     if place_type and geo:
         center, radius = build_nearby_circle(geo)
         body = {
-            "includedTypes": [place_type],
+            "includedPrimaryTypes": [place_type],
             "maxResultCount": 20,
             "rankPreference": "POPULARITY",
             "locationRestriction": {"circle": {"center": center, "radius": radius}},

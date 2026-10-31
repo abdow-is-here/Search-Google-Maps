@@ -13,6 +13,7 @@ import json
 import threading
 from datetime import datetime, timezone
 import requests
+from urllib.parse import quote
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
@@ -22,6 +23,12 @@ TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress"
 
 CITY_RADIUS_METERS = 40000.0  # fallback only, used if a place has no viewport info
+
+# Caches the city->coordinates/boundary lookup so searching the same city repeatedly
+# (very common — e.g. your own current city) doesn't burn extra Places API quota.
+# Resets whenever the app restarts/redeploys; that's fine, it just rebuilds itself.
+GEOCODE_CACHE = {}
+GEOCODE_CACHE_LOCK = threading.Lock()
 
 LOG_FILE = os.path.join(os.path.dirname(__file__), "visit_log.jsonl")
 LOG_LOCK = threading.Lock()
@@ -113,7 +120,14 @@ def resolve_location_phrase(query, city, country):
 
 
 def geocode_location(location_text):
-    """Looks up a place's coordinates AND real boundary (viewport) using the same Places API."""
+    """Looks up a place's coordinates AND real boundary (viewport) using the same Places API.
+    Cached by location text so the same city isn't re-resolved on every search."""
+    cache_key = location_text.strip().lower()
+
+    with GEOCODE_CACHE_LOCK:
+        if cache_key in GEOCODE_CACHE:
+            return GEOCODE_CACHE[cache_key]
+
     body = {"textQuery": location_text, "pageSize": 1}
     headers = {
         "Content-Type": "application/json",
@@ -122,20 +136,22 @@ def geocode_location(location_text):
     }
     resp = requests.post(TEXT_SEARCH_URL, json=body, headers=headers).json()
     places = resp.get("places", [])
-    if not places:
-        return None
 
-    place = places[0]
-    loc = place.get("location")
-    viewport = place.get("viewport")
-    if not loc:
-        return None
+    result = None
+    if places:
+        place = places[0]
+        loc = place.get("location")
+        if loc:
+            result = {
+                "lat": loc.get("latitude"),
+                "lng": loc.get("longitude"),
+                "viewport": place.get("viewport"),  # has 'low' and 'high' lat/lng bounds, or None
+            }
 
-    return {
-        "lat": loc.get("latitude"),
-        "lng": loc.get("longitude"),
-        "viewport": viewport,  # has 'low' and 'high' lat/lng bounds, or None
-    }
+    with GEOCODE_CACHE_LOCK:
+        GEOCODE_CACHE[cache_key] = result
+
+    return result
 
 
 def build_location_restriction(geo):
@@ -263,7 +279,11 @@ def api_search():
             "rating": p.get("rating"),
             "reviews": p.get("user_ratings_total", 0),
             "address": p.get("formatted_address"),
-            "maps_url": f"https://www.google.com/maps/place/?q=place_id:{p.get('place_id')}",
+            "maps_url": (
+                "https://www.google.com/maps/search/?api=1"
+                f"&query={quote(p.get('name', ''))}"
+                f"&query_place_id={p.get('place_id', '')}"
+            ),
         }
         for p in top
     ]

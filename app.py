@@ -20,9 +20,33 @@ app = Flask(__name__)
 
 API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+NEARBY_SEARCH_URL = "https://places.googleapis.com/v1/places:searchNearby"
 FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress"
 
 CITY_RADIUS_METERS = 40000.0  # fallback only, used if a place has no viewport info
+NEARBY_RADIUS_CAP = 50000.0   # Nearby Search's own max radius
+
+# The 13 sidebar category shortcuts, mapped to Google's official Place types.
+# Text Search has no "sort by popularity/reviews" option — only relevance or
+# distance — so a broad query like "restaurants" can easily miss a city's
+# most-reviewed places entirely. Nearby Search DOES support ranking by
+# popularity, but only for exact category types like these (not free text),
+# which is why only these known categories get routed through it.
+CATEGORY_TYPE_MAP = {
+    "restaurants": "restaurant",
+    "hotels": "lodging",
+    "car rental": "car_rental",
+    "gyms": "gym",
+    "libraries": "library",
+    "parks": "park",
+    "beauty salons": "beauty_salon",
+    "dry cleaning": "laundry",
+    "hospitals": "hospital",
+    "schools": "school",
+    "malls": "shopping_mall",
+    "mosques": "mosque",
+    "grocery stores": "grocery_store",
+}
 
 # Caches the city->coordinates/boundary lookup so searching the same city repeatedly
 # (very common — e.g. your own current city) doesn't burn extra Places API quota.
@@ -178,11 +202,41 @@ def build_location_restriction(geo):
     }
 
 
-def search_places(query, city=None, country=None, max_pages=3):
-    """Uses the New Places API (Text Search), hard-restricted to the resolved city."""
-    results = []
+def build_nearby_circle(geo):
+    """A circle (required shape for Nearby Search) sized to the city, capped at 50km."""
+    viewport = geo.get("viewport")
+    radius = CITY_RADIUS_METERS
+    if viewport and viewport.get("low") and viewport.get("high"):
+        lat_span = abs(viewport["high"]["latitude"] - viewport["low"]["latitude"])
+        lng_span = abs(viewport["high"]["longitude"] - viewport["low"]["longitude"])
+        # Rough degrees->meters conversion, just to size the circle reasonably.
+        radius = max(lat_span, lng_span) * 111_000 / 2
+    radius = min(max(radius, 1000.0), NEARBY_RADIUS_CAP)
+    return {"latitude": geo["lat"], "longitude": geo["lng"]}, radius
 
-    location_restriction = None
+
+def _parse_places(raw_places):
+    return [
+        {
+            "name": p.get("displayName", {}).get("text", "N/A"),
+            "rating": p.get("rating"),
+            "user_ratings_total": p.get("userRatingCount", 0),
+            "formatted_address": p.get("formattedAddress"),
+            "place_id": p.get("id"),
+        }
+        for p in raw_places
+    ]
+
+
+def search_places(query, city=None, country=None, max_pages=3):
+    """Finds places for a query, hard-restricted to the resolved city.
+
+    Known categories (Restaurants, Hotels, etc.) go through Nearby Search
+    ranked by POPULARITY, since Text Search has no such ranking option and
+    can miss a city's most-reviewed places under a broad relevance match.
+    Anything else (free-text queries) uses Text Search as before.
+    """
+    geo = None
     location_phrase = resolve_location_phrase(query, city, country)
     if location_phrase:
         geo = geocode_location(location_phrase)
@@ -190,32 +244,43 @@ def search_places(query, city=None, country=None, max_pages=3):
             # A location WAS specified but couldn't be resolved — better to say so
             # clearly than to silently run an unrestricted, potentially global search.
             raise RuntimeError(f"Could not find the location \"{location_phrase}\". Try a different spelling.")
-        location_restriction = build_location_restriction(geo)
 
-    body = {"textQuery": query, "pageSize": 20}
-    if location_restriction:
-        body["locationRestriction"] = location_restriction
+    place_type = CATEGORY_TYPE_MAP.get(query.strip().lower())
 
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": API_KEY,
-        "X-Goog-FieldMask": FIELD_MASK + ",nextPageToken",
+        "X-Goog-FieldMask": FIELD_MASK,
     }
 
+    if place_type and geo:
+        center, radius = build_nearby_circle(geo)
+        body = {
+            "includedTypes": [place_type],
+            "maxResultCount": 20,
+            "rankPreference": "POPULARITY",
+            "locationRestriction": {"circle": {"center": center, "radius": radius}},
+        }
+        resp = requests.post(NEARBY_SEARCH_URL, json=body, headers=headers).json()
+        if "error" in resp:
+            raise RuntimeError(resp["error"].get("message", "Unknown error"))
+        return _parse_places(resp.get("places", []))
+
+    # Free-text search (Text Search), with pagination up to max_pages.
+    location_restriction = build_location_restriction(geo) if geo else None
+    body = {"textQuery": query, "pageSize": 20}
+    if location_restriction:
+        body["locationRestriction"] = location_restriction
+
+    results = []
+    headers["X-Goog-FieldMask"] = FIELD_MASK + ",nextPageToken"
     for _ in range(max_pages):
         resp = requests.post(TEXT_SEARCH_URL, json=body, headers=headers).json()
 
         if "error" in resp:
             raise RuntimeError(resp["error"].get("message", "Unknown error"))
 
-        for p in resp.get("places", []):
-            results.append({
-                "name": p.get("displayName", {}).get("text", "N/A"),
-                "rating": p.get("rating"),
-                "user_ratings_total": p.get("userRatingCount", 0),
-                "formatted_address": p.get("formattedAddress"),
-                "place_id": p.get("id"),
-            })
+        results.extend(_parse_places(resp.get("places", [])))
 
         next_token = resp.get("nextPageToken")
         if not next_token:

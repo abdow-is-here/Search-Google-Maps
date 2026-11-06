@@ -387,26 +387,34 @@ def search_places(query, city=None, country=None, max_pages=3):
             place_type = extract_category_match(query)
             discovered = True  # not individually verified — treat failures as non-fatal
 
+    # Nearby Search (POPULARITY-ranked), when a category is known or discovered.
+    # NOTE: even this "accurate" tool has a real limit — "popularity" is still
+    # Google's own black-box score, not literally sorted by raw review count,
+    # and it caps at 20 results with NO pagination at all. So a genuinely
+    # high-review place can still be outside that top-20 slice. That's why we
+    # don't stop here — we also run Text Search below and merge both result
+    # sets before doing our own definitive sort by review count. A place only
+    # needs to be caught by ONE of the two tools to end up ranked correctly.
+    nearby_places = []
     if place_type and geo:
         center, radius = build_nearby_circle(geo)
-        body = {
+        nearby_body = {
             "includedPrimaryTypes": [place_type],
             "maxResultCount": 20,
             "rankPreference": "POPULARITY",
             "locationRestriction": {"circle": {"center": center, "radius": radius}},
         }
-        resp = requests.post(NEARBY_SEARCH_URL, json=body, headers=headers).json()
+        resp = requests.post(NEARBY_SEARCH_URL, json=nearby_body, headers=headers).json()
         if "error" not in resp:
-            return _parse_places(resp.get("places", []))
-        if not discovered:
+            nearby_places = _parse_places(resp.get("places", []))
+        elif not discovered:
             # A phrase from our own verified dictionary failed — that's a real
             # problem worth surfacing, not silently hiding.
             raise RuntimeError(resp["error"].get("message", "Unknown error"))
         # A DISCOVERED type can occasionally be one Nearby Search can't filter
-        # on (e.g. a Table B type). Fall through to Text Search below instead
-        # of failing the whole search over a best-effort guess.
+        # on (e.g. a Table B type) — fine, Text Search below still runs.
 
-    # Free-text search (Text Search), with pagination up to max_pages.
+    # Text Search (relevance-ranked), with pagination up to max_pages.
     # Google's own Text Search docs recommend embedding the location directly in
     # the text (e.g. "Restaurants in New York") for reliable categorical-query
     # detection — a separate locationRestriction field alone isn't always enough,
@@ -418,28 +426,37 @@ def search_places(query, city=None, country=None, max_pages=3):
         text_query = f"{query} in {location_phrase}"
 
     location_restriction = build_location_restriction(geo) if geo else None
-    body = {"textQuery": text_query, "pageSize": 20}
+    text_body = {"textQuery": text_query, "pageSize": 20}
     if location_restriction:
-        body["locationRestriction"] = location_restriction
+        text_body["locationRestriction"] = location_restriction
 
-    results = []
+    text_places = []
     headers["X-Goog-FieldMask"] = FIELD_MASK + ",nextPageToken"
     for _ in range(max_pages):
-        resp = requests.post(TEXT_SEARCH_URL, json=body, headers=headers).json()
+        resp = requests.post(TEXT_SEARCH_URL, json=text_body, headers=headers).json()
 
         if "error" in resp:
+            if nearby_places:
+                break  # we still have the Nearby results; don't fail the whole search
             raise RuntimeError(resp["error"].get("message", "Unknown error"))
 
-        results.extend(_parse_places(resp.get("places", [])))
+        text_places.extend(_parse_places(resp.get("places", [])))
 
         next_token = resp.get("nextPageToken")
         if not next_token:
             break
 
         time.sleep(2)  # short delay before a page token becomes valid
-        body["pageToken"] = next_token
+        text_body["pageToken"] = next_token
 
-    return results
+    # Merge both pools, deduplicated by place_id — a place only needs to be
+    # found by one of the two tools to be correctly ranked afterward.
+    merged = {}
+    for p in nearby_places + text_places:
+        pid = p.get("place_id")
+        if pid and pid not in merged:
+            merged[pid] = p
+    return list(merged.values())
 
 
 def rank_restaurants(places, min_reviews=0, top_n=10, min_rating=0.0):

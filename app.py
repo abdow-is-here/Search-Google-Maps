@@ -33,20 +33,89 @@ NEARBY_RADIUS_CAP = 50000.0   # Nearby Search's own max radius
 # popularity, but only for exact category types like these (not free text),
 # which is why only these known categories get routed through it.
 CATEGORY_TYPE_MAP = {
+    # The 13 sidebar buttons (plural, as labeled) + their singular forms,
+    # since free-text search shouldn't require the exact button wording
     "restaurants": "restaurant",
+    "restaurant": "restaurant",
     "hotels": "lodging",
+    "hotel": "lodging",
     "car rental": "car_rental",
+    "car rentals": "car_rental",
     "gyms": "gym",
     "libraries": "library",
+    "library": "library",
     "parks": "park",
+    "park": "park",
     "beauty salons": "beauty_salon",
+    "beauty salon": "beauty_salon",
     "dry cleaning": "laundry",
     "hospitals": "hospital",
+    "hospital": "hospital",
     "schools": "school",
+    "school": "school",
     "malls": "shopping_mall",
+    "mall": "shopping_mall",
     "mosques": "mosque",
+    "mosque": "mosque",
     "grocery stores": "grocery_store",
+    "grocery store": "grocery_store",
+    # Common free-text searches, mapped to their real Google Places type —
+    # covers terms beyond the sidebar so more typed searches get accurate,
+    # popularity-ranked results instead of relevance-only Text Search.
+    "barber shop": "barber_shop",
+    "barbershop": "barber_shop",
+    "barber": "barber_shop",
+    "hair salon": "hair_salon",
+    "hairdresser": "hair_salon",
+    "nail salon": "nail_salon",
+    "spa": "spa",
+    "cafe": "cafe",
+    "cafes": "cafe",
+    "coffee shop": "cafe",
+    "coffee shops": "cafe",
+    "bakery": "bakery",
+    "bakeries": "bakery",
+    "pharmacy": "pharmacy",
+    "pharmacies": "pharmacy",
+    "dentist": "dentist",
+    "dentists": "dentist",
+    "doctor": "doctor",
+    "clinic": "medical_clinic",
+    "clinics": "medical_clinic",
+    "bank": "bank",
+    "banks": "bank",
+    "atm": "atm",
+    "gas station": "gas_station",
+    "gas stations": "gas_station",
+    "petrol station": "gas_station",
+    "supermarket": "supermarket",
+    "supermarkets": "supermarket",
+    "bookstore": "book_store",
+    "bookstores": "book_store",
+    "pet store": "pet_store",
+    "pet stores": "pet_store",
+    "cinema": "movie_theater",
+    "movie theater": "movie_theater",
+    "gym": "gym",
+    "fitness center": "fitness_center",
+    "veterinary clinic": "veterinary_care",
+    "vet": "veterinary_care",
 }
+
+# Longest phrases first, so a multi-word match (e.g. "coffee shop") is found
+# before a shorter one that might also appear in the same text.
+_CATEGORY_PHRASES_BY_LENGTH = sorted(CATEGORY_TYPE_MAP.keys(), key=len, reverse=True)
+
+
+def extract_category_match(query):
+    """Finds a known category phrase ANYWHERE in free text — not just an exact
+    match — e.g. 'best barber shop near me' still finds 'barber shop'. Matches
+    on whole words/phrases only (so 'spa' doesn't wrongly match inside 'spacious')."""
+    q = query.lower()
+    for phrase in _CATEGORY_PHRASES_BY_LENGTH:
+        if re.search(r"\b" + re.escape(phrase) + r"\b", q):
+            return CATEGORY_TYPE_MAP[phrase]
+    return None
 
 # Caches the city->coordinates/boundary lookup so searching the same city repeatedly
 # (very common — e.g. your own current city) doesn't burn extra Places API quota.
@@ -124,23 +193,36 @@ def _track_visit():
         pass  # logging is best-effort; never break the app over a disk issue
 
 
+NOT_A_PLACE_NAME = {"me", "here", "my location", "my area", "my current location"}
+
+
 def extract_location_phrase(query):
-    """Pulls out the location part of a query like 'malls in Cairo' -> 'Cairo'."""
+    """Pulls out the location part of a query like 'malls in Cairo' -> 'Cairo'.
+    Treats 'near me'/'near here' etc. as NOT an explicit location — those mean
+    the user's current location, which is handled by the city/country fallback,
+    not a literal place called 'me' to geocode."""
     match = re.search(r"\b(?:in|near|at)\s+(.+)$", query, re.IGNORECASE)
-    return match.group(1).strip() if match else None
+    if not match:
+        return None
+    phrase = match.group(1).strip()
+    if phrase.lower() in NOT_A_PLACE_NAME:
+        return None
+    return phrase
 
 
 def resolve_location_phrase(query, city, country):
     """An explicit 'in X' typed by the user always wins; otherwise falls back to
-    the city/country the client sent (auto-detected, or chosen in Custom Filters)."""
+    the city/country the client sent (auto-detected, or chosen in Custom Filters).
+    Returns (phrase, already_in_query_text) — the second value tells the caller
+    whether the location is already embedded in the user's own text (True) or
+    needs to be added to the search text itself (False)."""
     explicit = extract_location_phrase(query)
     if explicit:
-        return explicit
+        return explicit, True
     if city:
-        if country and country.lower() not in city.lower():
-            return f"{city}, {country}"
-        return city
-    return None
+        phrase = f"{city}, {country}" if country and country.lower() not in city.lower() else city
+        return phrase, False
+    return None, False
 
 
 def geocode_location(location_text):
@@ -215,6 +297,32 @@ def build_nearby_circle(geo):
     return {"latitude": geo["lat"], "longitude": geo["lng"]}, radius
 
 
+def discover_primary_type(query, geo, headers):
+    """When a query isn't one of our known phrases, ask Google itself what type
+    of place it's most likely about — a single cheap lookup (1 result, one
+    field) — so we can still route through the accurate, popularity-ranked
+    tool for queries we never explicitly catalogued. This is the real fix for
+    relevance-ranked results being wrong: instead of only trusting a fixed list
+    of phrases, we let Google's own classification of a real matching place
+    tell us the category, every time, for any query."""
+    body = {"textQuery": query, "pageSize": 1}
+    if geo:
+        restriction = build_location_restriction(geo)
+        if restriction:
+            body["locationRestriction"] = restriction
+
+    discover_headers = dict(headers, **{"X-Goog-FieldMask": "places.primaryType"})
+    try:
+        resp = requests.post(TEXT_SEARCH_URL, json=body, headers=discover_headers).json()
+    except requests.RequestException:
+        return None
+
+    places = resp.get("places", [])
+    if not places:
+        return None
+    return places[0].get("primaryType")
+
+
 def _parse_places(raw_places):
     return [
         {
@@ -231,13 +339,17 @@ def _parse_places(raw_places):
 def search_places(query, city=None, country=None, max_pages=3):
     """Finds places for a query, hard-restricted to the resolved city.
 
-    Known categories (Restaurants, Hotels, etc.) go through Nearby Search
-    ranked by POPULARITY, since Text Search has no such ranking option and
-    can miss a city's most-reviewed places under a broad relevance match.
-    Anything else (free-text queries) uses Text Search as before.
+    Known categories go through Nearby Search ranked by POPULARITY, since Text
+    Search has no such ranking option and can miss a city's most-reviewed
+    places under a broad relevance match (and only ever returns 60 results
+    total). For a query that isn't in our known-phrase dictionary, we ask
+    Google itself what type of place it's most likely about (one cheap
+    lookup) and route through the same accurate path using that discovered
+    type. Only if neither of those applies — or the discovered type turns out
+    unusable for filtering — does it fall back to plain Text Search.
     """
     geo = None
-    location_phrase = resolve_location_phrase(query, city, country)
+    location_phrase, location_in_query_text = resolve_location_phrase(query, city, country)
     if location_phrase:
         geo = geocode_location(location_phrase)
         if not geo:
@@ -245,13 +357,35 @@ def search_places(query, city=None, country=None, max_pages=3):
             # clearly than to silently run an unrestricted, potentially global search.
             raise RuntimeError(f"Could not find the location \"{location_phrase}\". Try a different spelling.")
 
-    place_type = CATEGORY_TYPE_MAP.get(query.strip().lower())
-
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": API_KEY,
         "X-Goog-FieldMask": FIELD_MASK,
     }
+
+    # 1. An EXACT known phrase (the whole query, not just a word inside it) is
+    # trusted outright — fast, no extra lookup, verified type string.
+    exact_match_type = CATEGORY_TYPE_MAP.get(query.strip().lower())
+    place_type = exact_match_type
+    discovered = False
+
+    if not exact_match_type and geo:
+        # 2. Not an exact match — the query might still CONTAIN a known phrase
+        # (e.g. "moroccan restaurants" contains "restaurants"), but it might
+        # also have extra, more specific words ("moroccan") that phrase can't
+        # capture. Ask Google what type this query is most likely about —
+        # that discovered type, when available, is preferred for being more
+        # specific than a generic partial match.
+        discovered_type = discover_primary_type(query, geo, headers)
+        if discovered_type:
+            place_type = discovered_type
+            discovered = True
+        else:
+            # Discovery found nothing — fall back to a partial/fuzzy match
+            # (e.g. the generic "restaurant" from "moroccan restaurants")
+            # rather than giving up and using the less accurate tool.
+            place_type = extract_category_match(query)
+            discovered = True  # not individually verified — treat failures as non-fatal
 
     if place_type and geo:
         center, radius = build_nearby_circle(geo)
@@ -262,13 +396,29 @@ def search_places(query, city=None, country=None, max_pages=3):
             "locationRestriction": {"circle": {"center": center, "radius": radius}},
         }
         resp = requests.post(NEARBY_SEARCH_URL, json=body, headers=headers).json()
-        if "error" in resp:
+        if "error" not in resp:
+            return _parse_places(resp.get("places", []))
+        if not discovered:
+            # A phrase from our own verified dictionary failed — that's a real
+            # problem worth surfacing, not silently hiding.
             raise RuntimeError(resp["error"].get("message", "Unknown error"))
-        return _parse_places(resp.get("places", []))
+        # A DISCOVERED type can occasionally be one Nearby Search can't filter
+        # on (e.g. a Table B type). Fall through to Text Search below instead
+        # of failing the whole search over a best-effort guess.
 
     # Free-text search (Text Search), with pagination up to max_pages.
+    # Google's own Text Search docs recommend embedding the location directly in
+    # the text (e.g. "Restaurants in New York") for reliable categorical-query
+    # detection — a separate locationRestriction field alone isn't always enough,
+    # especially for phrases Google doesn't confidently recognize as a business
+    # category (e.g. "Barber shop"). So if the location came from auto-detection
+    # or Custom Filters rather than the user's own typed text, add it to the text.
+    text_query = query
+    if location_phrase and not location_in_query_text:
+        text_query = f"{query} in {location_phrase}"
+
     location_restriction = build_location_restriction(geo) if geo else None
-    body = {"textQuery": query, "pageSize": 20}
+    body = {"textQuery": text_query, "pageSize": 20}
     if location_restriction:
         body["locationRestriction"] = location_restriction
 

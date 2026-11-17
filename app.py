@@ -100,7 +100,21 @@ CATEGORY_TYPE_MAP = {
     "fitness center": "fitness_center",
     "veterinary clinic": "veterinary_care",
     "vet": "veterinary_care",
+    "breakfast": "breakfast_restaurant",
+    "breakfast restaurant": "breakfast_restaurant",
+    "breakfast restaurants": "breakfast_restaurant",
+    "brunch": "brunch_restaurant",
+    "brunch restaurant": "brunch_restaurant",
+    "brunch restaurants": "brunch_restaurant",
 }
+
+# Types where merging in Text Search's broader results would defeat the
+# point of the search — e.g. "breakfast" should mean restaurants genuinely
+# SPECIALIZED in breakfast, not any cafe/hotel/general restaurant that
+# happens to serve it too. For these, only the strict, type-filtered Nearby
+# Search results are used — no merge, no Text Search call at all (which also
+# saves the extra API cost for these specific searches).
+STRICT_ONLY_TYPES = {"breakfast_restaurant", "brunch_restaurant"}
 
 # Longest phrases first, so a multi-word match (e.g. "coffee shop") is found
 # before a shorter one that might also appear in the same text.
@@ -117,11 +131,34 @@ def extract_category_match(query):
             return CATEGORY_TYPE_MAP[phrase]
     return None
 
+
+def find_all_category_types(query):
+    """Returns the SET of distinct Google place types matched anywhere in the
+    query (not just one). Used to detect a search for more than one category
+    at once (e.g. 'restaurants and hotels') — two different PHRASES that map
+    to the SAME type (e.g. 'hotel' and 'hotels') don't count as two."""
+    q = query.lower()
+    types_found = set()
+    for phrase in _CATEGORY_PHRASES_BY_LENGTH:
+        if re.search(r"\b" + re.escape(phrase) + r"\b", q):
+            types_found.add(CATEGORY_TYPE_MAP[phrase])
+    return types_found
+
 # Caches the city->coordinates/boundary lookup so searching the same city repeatedly
 # (very common — e.g. your own current city) doesn't burn extra Places API quota.
-# Resets whenever the app restarts/redeploys; that's fine, it just rebuilds itself.
+# Google's Places API policy allows caching latitude/longitude for up to 30
+# consecutive calendar days (and no longer) — entries older than that are
+# treated as expired and re-fetched, to stay compliant. Resets on redeploy too.
 GEOCODE_CACHE = {}
 GEOCODE_CACHE_LOCK = threading.Lock()
+GEOCODE_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days, per Google's policy limit
+
+# Caches which Google place type a discovered (non-dictionary) query maps to,
+# e.g. "moroccan restaurants" -> "moroccan_restaurant". This is a linguistic
+# mapping fact we derive ourselves, not Places API Content about a specific
+# business, so it's kept indefinitely (no expiry), unlike GEOCODE_CACHE above.
+DISCOVERY_CACHE = {}
+DISCOVERY_CACHE_LOCK = threading.Lock()
 
 LOG_FILE = os.path.join(os.path.dirname(__file__), "visit_log.jsonl")
 LOG_LOCK = threading.Lock()
@@ -229,10 +266,15 @@ def geocode_location(location_text):
     """Looks up a place's coordinates AND real boundary (viewport) using the same Places API.
     Cached by location text so the same city isn't re-resolved on every search."""
     cache_key = location_text.strip().lower()
+    now = time.time()
 
     with GEOCODE_CACHE_LOCK:
-        if cache_key in GEOCODE_CACHE:
-            return GEOCODE_CACHE[cache_key]
+        cached = GEOCODE_CACHE.get(cache_key)
+        if cached is not None:
+            result, cached_at = cached
+            if now - cached_at < GEOCODE_CACHE_MAX_AGE_SECONDS:
+                return result
+            # Expired (30+ days old) — fall through and re-fetch fresh data.
 
     body = {"textQuery": location_text, "pageSize": 1}
     headers = {
@@ -255,7 +297,7 @@ def geocode_location(location_text):
             }
 
     with GEOCODE_CACHE_LOCK:
-        GEOCODE_CACHE[cache_key] = result
+        GEOCODE_CACHE[cache_key] = (result, now)
 
     return result
 
@@ -375,8 +417,19 @@ def search_places(query, city=None, country=None, max_pages=3):
         # also have extra, more specific words ("moroccan") that phrase can't
         # capture. Ask Google what type this query is most likely about —
         # that discovered type, when available, is preferred for being more
-        # specific than a generic partial match.
-        discovered_type = discover_primary_type(query, geo, headers)
+        # specific than a generic partial match. Checked against our own
+        # cache first (a linguistic fact we derive, not Places API Content
+        # about a specific place, so it's kept indefinitely).
+        discovery_key = query.strip().lower()
+        with DISCOVERY_CACHE_LOCK:
+            discovered_type = DISCOVERY_CACHE.get(discovery_key)
+
+        if discovered_type is None:
+            discovered_type = discover_primary_type(query, geo, headers)
+            if discovered_type:
+                with DISCOVERY_CACHE_LOCK:
+                    DISCOVERY_CACHE[discovery_key] = discovered_type
+
         if discovered_type:
             place_type = discovered_type
             discovered = True
@@ -413,6 +466,13 @@ def search_places(query, city=None, country=None, max_pages=3):
             raise RuntimeError(resp["error"].get("message", "Unknown error"))
         # A DISCOVERED type can occasionally be one Nearby Search can't filter
         # on (e.g. a Table B type) — fine, Text Search below still runs.
+
+        if place_type in STRICT_ONLY_TYPES and nearby_places:
+            # Specialized-only category (e.g. "breakfast") — a general
+            # restaurant/cafe that merely serves breakfast shouldn't qualify,
+            # so we trust Nearby Search's strict type filter alone and skip
+            # the broader Text Search merge (saving its API cost too).
+            return nearby_places
 
     # Text Search (relevance-ranked), with pagination up to max_pages.
     # Google's own Text Search docs recommend embedding the location directly in
@@ -498,6 +558,12 @@ def api_search():
 
     if not query:
         return jsonify({"error": "Please provide a search query."}), 400
+
+    matched_types = find_all_category_types(query)
+    if len(matched_types) > 1:
+        return jsonify({
+            "error": "Please search for one category at a time (e.g. \"restaurants\" or \"hotels\", not both)."
+        }), 400
 
     try:
         places = search_places(query, city=city, country=country)

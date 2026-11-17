@@ -556,19 +556,27 @@ def search_popular_places(city=None, country=None, max_results=10):
 
     Nearby Search is the only one of the two Places tools that can rank by
     POPULARITY at all, and it does that for an area regardless of category
-    when no includedTypes/includedPrimaryTypes is given. Text Search has no
-    popularity ranking and needs a text query, which doesn't fit "any
-    category", so it isn't used here.
+    when no includedTypes/includedPrimaryTypes is given.
 
     The real limit: a single Nearby Search call caps at 20 results with NO
     pagination at all. For up to 20 requested results, one call is enough and
     cheap. For MORE than 20, there's no way to page further within one call —
     so instead we call it again over several overlapping sub-areas of the
-    same city (see build_quadrant_circles) and merge the results by place_id,
-    then let the caller's own review-count sort pick the real top N out of
-    that bigger pool. This costs more API calls (up to 5 instead of 1), which
-    is why the overall ceiling is capped at EXPERIENCE_HARD_CAP rather than
-    left unlimited.
+    same city (see build_quadrant_circles) and merge the results by place_id.
+    This costs more API calls (up to 5 instead of 1), which is why the
+    overall ceiling is capped at EXPERIENCE_HARD_CAP rather than left
+    unlimited.
+
+    On top of that, "popularity" is still Google's own black-box score, not
+    literally sorted by raw review count — the same gap found and fixed for
+    single-category searches (see search_places). A genuinely high-review
+    place (a well-known hotel, say) can be outside the slice Nearby Search's
+    popularity score picks for a given sub-area, even though its review
+    count alone would put it near the top. So just like search_places, this
+    also runs a generic, category-free Text Search leg (a broad "best places
+    in <city>" query, not naming any category) and merges it in — a place
+    only needs to be caught by ONE of the two tools to end up ranked
+    correctly by our own final review-count sort.
     """
     if not city:
         raise RuntimeError("Please allow location access or choose a city to see what's popular there.")
@@ -612,6 +620,31 @@ def search_popular_places(city=None, country=None, max_results=10):
             pid = p.get("place_id")
             if pid and pid not in merged:
                 merged[pid] = p
+
+    # Text Search leg — a generic, category-free query embedding the city
+    # name (per Google's own guidance for reliable location detection),
+    # merged in the same way search_places merges its two legs. Capped at 2
+    # pages (up to 40 results) to balance the extra coverage against cost.
+    text_body = {
+        "textQuery": f"best places in {location_phrase}",
+        "pageSize": 20,
+        "locationRestriction": build_location_restriction(geo),
+    }
+    text_headers = dict(headers, **{"X-Goog-FieldMask": FIELD_MASK + ",nextPageToken"})
+    for _ in range(2):
+        resp = requests.post(TEXT_SEARCH_URL, json=text_body, headers=text_headers).json()
+        if "error" in resp:
+            last_error = resp["error"].get("message", "Unknown error")
+            break
+        for p in _parse_places(resp.get("places", [])):
+            pid = p.get("place_id")
+            if pid and pid not in merged:
+                merged[pid] = p
+        next_token = resp.get("nextPageToken")
+        if not next_token:
+            break
+        time.sleep(2)  # short delay before a page token becomes valid
+        text_body["pageToken"] = next_token
 
     if not merged and last_error:
         raise RuntimeError(last_error)

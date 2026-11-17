@@ -54,6 +54,10 @@
             <input type="radio" name="mode" value="custom">
             <span>Custom filters</span>
           </label>
+          <label class="mode-option">
+            <input type="radio" name="mode" value="experience">
+            <span>Experience</span>
+          </label>
         </div>
         <p id="mode-hint" class="mode-hint">Shows the top 10 results for your search, sorted by number of reviews (rating breaks ties).</p>
 
@@ -86,6 +90,17 @@
           </label>
         </div>
 
+        <div class="options" id="experience-options" hidden>
+          <label>
+            Max. results
+            <select id="max_results">
+              <option value="10" selected>10</option>
+              <option value="15">15</option>
+              <option value="20">20</option>
+            </select>
+          </label>
+        </div>
+
         <button type="submit">Search</button>
       </form>
 
@@ -110,6 +125,7 @@
 
     const customOptionsEl = document.getElementById('custom-options');
     const locationOptionsEl = document.getElementById('location-options');
+    const experienceOptionsEl = document.getElementById('experience-options');
     const modeHintEl = document.getElementById('mode-hint');
 
     // Detected (or manually chosen) current location
@@ -137,12 +153,25 @@
     }
 
     function applyMode() {
-      const isCustom = getMode() === 'custom';
+      const mode = getMode();
+      const isCustom = mode === 'custom';
+      const isExperience = mode === 'experience';
+
       customOptionsEl.hidden = !isCustom;
-      locationOptionsEl.hidden = !isCustom;
-      modeHintEl.textContent = isCustom
-        ? 'Only shows places that meet the minimum rating and review count you set, in the country/city you pick.'
-        : 'Shows the top 10 results for your search in your current city, sorted by number of reviews (rating breaks ties).';
+      experienceOptionsEl.hidden = !isExperience;
+      locationOptionsEl.hidden = !(isCustom || isExperience);
+
+      // Experience mode has no search term at all — it's purely location-based.
+      queryInput.hidden = isExperience;
+      queryInput.required = !isExperience;
+
+      if (isExperience) {
+        modeHintEl.textContent = 'Shows the most popular places in your city, of any kind — restaurants, malls, cinemas, parks, anything — sorted by number of reviews.';
+      } else if (isCustom) {
+        modeHintEl.textContent = 'Only shows places that meet the minimum rating and review count you set, in the country/city you pick.';
+      } else {
+        modeHintEl.textContent = 'Shows the top 10 results for your search in your current city, sorted by number of reviews (rating breaks ties).';
+      }
     }
 
     document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', applyMode));
@@ -256,24 +285,30 @@
     // --- Search submit ---
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const query = queryInput.value.trim();
       const mode = getMode();
+      const query = mode === 'experience' ? '' : queryInput.value.trim();
 
-      if (mode === 'auto' && !currentCity) {
+      if (mode !== 'custom' && !currentCity) {
         statusEl.textContent = 'Detecting your location...';
         await locationReady;
       }
 
-      let url = `/api/search?query=${encodeURIComponent(query)}&mode=${mode}`;
+      let url = `/api/search?mode=${mode}`;
+      if (mode !== 'experience') url += `&query=${encodeURIComponent(query)}`;
 
-      if (mode === 'custom') {
-        const minRating = document.getElementById('min_rating').value;
-        const minReviews = document.getElementById('min_reviews').value;
-        const top = document.getElementById('top').value;
-        url += `&min_rating=${minRating}&min_reviews=${minReviews}&top=${top}`;
+      if (mode === 'custom' || mode === 'experience') {
+        if (mode === 'custom') {
+          const minRating = document.getElementById('min_rating').value;
+          const minReviews = document.getElementById('min_reviews').value;
+          const top = document.getElementById('top').value;
+          url += `&min_rating=${minRating}&min_reviews=${minReviews}&top=${top}`;
+        } else {
+          const maxResults = document.getElementById('max_results').value;
+          url += `&max_results=${maxResults}`;
+        }
 
-        const city = cityInputEl.value.trim();
-        const country = selectedCountryName();
+        const city = cityInputEl.value.trim() || currentCity;
+        const country = selectedCountryName() || currentCountryName;
         if (city) url += `&city=${encodeURIComponent(city)}`;
         if (country) url += `&country=${encodeURIComponent(country)}`;
       } else if (currentCity) {
@@ -293,12 +328,14 @@
           return;
         }
 
-        saveRecent(query);
+        if (mode !== 'experience') saveRecent(query);
 
         if (data.results.length === 0) {
           statusEl.textContent = mode === 'custom'
             ? 'No places met your rating/review filters. Try loosening them.'
-            : 'No rated places found for this search. Try a different search term.';
+            : mode === 'experience'
+              ? 'No popular places found for this location.'
+              : 'No rated places found for this search. Try a different search term.';
           return;
         }
 

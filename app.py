@@ -519,6 +519,49 @@ def search_places(query, city=None, country=None, max_pages=3):
     return list(merged.values())
 
 
+EXPERIENCE_MAX_RESULTS = 20  # Nearby Search's own hard cap — no pagination exists for it
+
+
+def search_popular_places(city=None, country=None, max_results=10):
+    """'Experience' mode: the most popular places in a city, of ANY category —
+    restaurants, malls, cinemas, parks, anything — not filtered to one type.
+
+    Nearby Search is the only one of the two Places tools that can rank by
+    POPULARITY at all, and it does that for an area regardless of category
+    when no includedTypes/includedPrimaryTypes is given. Text Search has no
+    popularity ranking and needs a text query, which doesn't fit "any
+    category", so it isn't used here. The real limit to know about: Nearby
+    Search caps at 20 results total with NO pagination, so max_results is
+    always clamped to that ceiling.
+    """
+    if not city:
+        raise RuntimeError("Please allow location access or choose a city to see what's popular there.")
+
+    location_phrase = f"{city}, {country}" if country and country.lower() not in city.lower() else city
+    geo = geocode_location(location_phrase)
+    if not geo:
+        raise RuntimeError(f"Could not find the location \"{location_phrase}\". Try a different spelling.")
+
+    max_results = max(1, min(int(max_results or 10), EXPERIENCE_MAX_RESULTS))
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": API_KEY,
+        "X-Goog-FieldMask": FIELD_MASK,
+    }
+    center, radius = build_nearby_circle(geo)
+    nearby_body = {
+        "maxResultCount": max_results,
+        "rankPreference": "POPULARITY",
+        "locationRestriction": {"circle": {"center": center, "radius": radius}},
+    }
+    resp = requests.post(NEARBY_SEARCH_URL, json=nearby_body, headers=headers).json()
+    if "error" in resp:
+        raise RuntimeError(resp["error"].get("message", "Unknown error"))
+
+    return _parse_places(resp.get("places", []))
+
+
 def rank_restaurants(places, min_reviews=0, top_n=10, min_rating=0.0):
     filtered = [
         p for p in places
@@ -544,6 +587,36 @@ def api_search():
     mode = request.args.get("mode", "auto")
     city = request.args.get("city", "").strip()
     country = request.args.get("country", "").strip()
+
+    if mode == "experience":
+        # Experience: most popular places in the city, any category — no
+        # search text, no rating/review filters, just a results-count cap.
+        try:
+            top_n = max(1, min(int(request.args.get("max_results", 10) or 10), EXPERIENCE_MAX_RESULTS))
+        except ValueError:
+            return jsonify({"error": "Invalid filter values."}), 400
+
+        try:
+            places = search_popular_places(city=city, country=country, max_results=top_n)
+            top = rank_restaurants(places, 0, top_n, 0.0)
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+
+        cleaned = [
+            {
+                "name": p.get("name"),
+                "rating": p.get("rating"),
+                "reviews": p.get("user_ratings_total", 0),
+                "address": p.get("formatted_address"),
+                "maps_url": (
+                    "https://www.google.com/maps/search/?api=1"
+                    f"&query={quote(p.get('name', ''))}"
+                    f"&query_place_id={p.get('place_id', '')}"
+                ),
+            }
+            for p in top
+        ]
+        return jsonify({"results": cleaned})
 
     if mode == "auto":
         # Best rankings: no rating/review filters, just the top 10 for the search term

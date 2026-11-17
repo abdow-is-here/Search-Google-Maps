@@ -519,7 +519,35 @@ def search_places(query, city=None, country=None, max_pages=3):
     return list(merged.values())
 
 
-EXPERIENCE_MAX_RESULTS = 20  # Nearby Search's own hard cap — no pagination exists for it
+EXPERIENCE_SINGLE_CALL_CAP = 20  # Nearby Search's own hard cap per call — no pagination exists for it
+EXPERIENCE_HARD_CAP = 50         # overall ceiling once we sample multiple sub-areas (cost/accuracy tradeoff)
+
+
+def _offset_latlng(lat, lng, d_lat_m, d_lng_m):
+    """Rough meters -> degrees offset (same level of approximation already used
+    elsewhere in this file, e.g. build_nearby_circle's radius sizing)."""
+    import math
+    lat2 = lat + d_lat_m / 111_000
+    lng_scale = 111_000 * max(0.2, abs(math.cos(math.radians(lat))))
+    lng2 = lng + d_lng_m / lng_scale
+    return lat2, lng2
+
+
+def build_quadrant_circles(geo):
+    """Splits the city into 4 overlapping sub-areas. Nearby Search is capped at
+    20 results PER CALL with no pagination at all, so the only way to build a
+    bigger candidate pool than one call can ever return is to call it again
+    over different, overlapping patches of the same city, then merge and
+    de-duplicate. Used only when the user asks for more than 20 results."""
+    center, radius = build_nearby_circle(geo)
+    lat, lng = center["latitude"], center["longitude"]
+    offset = radius / 2
+    sub_radius = min(radius * 0.75, NEARBY_RADIUS_CAP)
+    circles = []
+    for d_lat, d_lng in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        q_lat, q_lng = _offset_latlng(lat, lng, d_lat * offset, d_lng * offset)
+        circles.append(({"latitude": q_lat, "longitude": q_lng}, sub_radius))
+    return circles
 
 
 def search_popular_places(city=None, country=None, max_results=10):
@@ -530,9 +558,17 @@ def search_popular_places(city=None, country=None, max_results=10):
     POPULARITY at all, and it does that for an area regardless of category
     when no includedTypes/includedPrimaryTypes is given. Text Search has no
     popularity ranking and needs a text query, which doesn't fit "any
-    category", so it isn't used here. The real limit to know about: Nearby
-    Search caps at 20 results total with NO pagination, so max_results is
-    always clamped to that ceiling.
+    category", so it isn't used here.
+
+    The real limit: a single Nearby Search call caps at 20 results with NO
+    pagination at all. For up to 20 requested results, one call is enough and
+    cheap. For MORE than 20, there's no way to page further within one call —
+    so instead we call it again over several overlapping sub-areas of the
+    same city (see build_quadrant_circles) and merge the results by place_id,
+    then let the caller's own review-count sort pick the real top N out of
+    that bigger pool. This costs more API calls (up to 5 instead of 1), which
+    is why the overall ceiling is capped at EXPERIENCE_HARD_CAP rather than
+    left unlimited.
     """
     if not city:
         raise RuntimeError("Please allow location access or choose a city to see what's popular there.")
@@ -542,24 +578,45 @@ def search_popular_places(city=None, country=None, max_results=10):
     if not geo:
         raise RuntimeError(f"Could not find the location \"{location_phrase}\". Try a different spelling.")
 
-    max_results = max(1, min(int(max_results or 10), EXPERIENCE_MAX_RESULTS))
+    max_results = max(1, min(int(max_results or 10), EXPERIENCE_HARD_CAP))
 
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": API_KEY,
         "X-Goog-FieldMask": FIELD_MASK,
     }
-    center, radius = build_nearby_circle(geo)
-    nearby_body = {
-        "maxResultCount": max_results,
-        "rankPreference": "POPULARITY",
-        "locationRestriction": {"circle": {"center": center, "radius": radius}},
-    }
-    resp = requests.post(NEARBY_SEARCH_URL, json=nearby_body, headers=headers).json()
-    if "error" in resp:
-        raise RuntimeError(resp["error"].get("message", "Unknown error"))
 
-    return _parse_places(resp.get("places", []))
+    if max_results <= EXPERIENCE_SINGLE_CALL_CAP:
+        circles = [build_nearby_circle(geo)]
+        per_call_count = max_results
+    else:
+        # One call over the whole city plus 4 overlapping quadrant calls —
+        # each still capped at 20, but together they surface more distinct
+        # places than any single call could.
+        circles = [build_nearby_circle(geo)] + build_quadrant_circles(geo)
+        per_call_count = EXPERIENCE_SINGLE_CALL_CAP
+
+    merged = {}
+    last_error = None
+    for center, radius in circles:
+        nearby_body = {
+            "maxResultCount": per_call_count,
+            "rankPreference": "POPULARITY",
+            "locationRestriction": {"circle": {"center": center, "radius": radius}},
+        }
+        resp = requests.post(NEARBY_SEARCH_URL, json=nearby_body, headers=headers).json()
+        if "error" in resp:
+            last_error = resp["error"].get("message", "Unknown error")
+            continue
+        for p in _parse_places(resp.get("places", [])):
+            pid = p.get("place_id")
+            if pid and pid not in merged:
+                merged[pid] = p
+
+    if not merged and last_error:
+        raise RuntimeError(last_error)
+
+    return list(merged.values())
 
 
 def rank_restaurants(places, min_reviews=0, top_n=10, min_rating=0.0):
@@ -592,7 +649,7 @@ def api_search():
         # Experience: most popular places in the city, any category — no
         # search text, no rating/review filters, just a results-count cap.
         try:
-            top_n = max(1, min(int(request.args.get("max_results", 10) or 10), EXPERIENCE_MAX_RESULTS))
+            top_n = max(1, min(int(request.args.get("max_results", 10) or 10), EXPERIENCE_HARD_CAP))
         except ValueError:
             return jsonify({"error": "Invalid filter values."}), 400
 
